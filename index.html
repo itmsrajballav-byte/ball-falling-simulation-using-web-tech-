@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Satisfying Ball Merge Simulation</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #080b18;
+        color: white;
+        font-family: Arial, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+      }
+
+      .app {
+        width: 100%;
+        max-width: 500px;
+      }
+
+      .arena {
+        height: 510px;
+        position: relative;
+        overflow: hidden;
+        border-radius: 16px;
+        background: #090d1c;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .info {
+        position: absolute;
+        top: 14px;
+        left: 14px;
+        font-size: 12px;
+        letter-spacing: 2px;
+        pointer-events: none;
+      }
+
+      .count {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        font-size: 12px;
+      }
+
+      .progress {
+        position: absolute;
+        bottom: 12px;
+        left: 12px;
+        right: 12px;
+        height: 6px;
+        background: #273047;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .progress div {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #60a5fa, #c084fc, #f472b6);
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 30px;
+        padding: 12px 16px;
+        background: #26324e;
+        color: white;
+        cursor: pointer;
+      }
+
+      button:active {
+        transform: scale(0.96);
+      }
+
+      #start {
+        background: #a78bfa;
+        color: #111827;
+        font-weight: bold;
+      }
+
+      .speed {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 18px;
+        font-size: 13px;
+      }
+
+      .speed input {
+        flex: 1;
+      }
+
+      .status {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 12px;
+        font-size: 12px;
+        color: #9ca3af;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="app">
+      <div class="arena">
+        <canvas id="canvas"></canvas>
+        <div class="info">BALL MERGE SIMULATION</div>
+        <div class="count" id="count">0 BALLS</div>
+        <div class="progress">
+          <div id="progress"></div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="start">▶ Start filling</button>
+        <button id="sound">♫ Sound: Off</button>
+        <button id="reset">↻ Reset</button>
+      </div>
+
+      <div class="speed">
+        <label>Drop speed</label>
+        <input id="speed" type="range" min="1" max="10" value="4" />
+        <span id="speedValue">4</span>
+      </div>
+
+      <div class="status">
+        <span id="status">Ready</span>
+        <span id="merged">0 merged</span>
+      </div>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+
+      let W, H, dpr;
+      let balls = [];
+
+      let running = false;
+      let soundEnabled = false;
+      let audio = null;
+
+      let lastTime = 0;
+      let accumulator = 0;
+      let speed = 4;
+      let merged = 0;
+      let full = false;
+
+      const box = {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+      };
+
+      const colors = [
+        { color: "#72dcff", freq: 523.25 },
+        { color: "#b99aff", freq: 587.33 },
+        { color: "#ff83ba", freq: 659.25 },
+        { color: "#ffda7b", freq: 698.46 },
+        { color: "#70edbd", freq: 783.99 },
+        { color: "#ff987a", freq: 880 },
+        { color: "#8faaff", freq: 987.77 },
+      ];
+
+      // Canvas sizing
+      function resize() {
+        const rect = canvas.getBoundingClientRect();
+
+        dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+        W = rect.width;
+        H = rect.height;
+
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        box.w = Math.min(W * 0.78, 330);
+        box.h = H * 0.78;
+
+        box.x = (W - box.w) / 2;
+        box.y = H * 0.15;
+      }
+
+      window.addEventListener("resize", resize);
+
+      // Audio
+      function initAudio() {
+        if (!audio) {
+          audio = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        if (audio.state === "suspended") {
+          audio.resume();
+        }
+      }
+
+      // Soft wooden marimba-like sound
+      function playNote(freq, volume = 0.04) {
+        if (!soundEnabled) return;
+
+        try {
+          initAudio();
+
+          const now = audio.currentTime;
+
+          const oscillator = audio.createOscillator();
+          const gain = audio.createGain();
+
+          const overtone = audio.createOscillator();
+          const overtoneGain = audio.createGain();
+
+          const filter = audio.createBiquadFilter();
+
+          oscillator.type = "triangle";
+          oscillator.frequency.setValueAtTime(freq, now);
+          oscillator.frequency.exponentialRampToValueAtTime(
+            freq * 0.99,
+            now + 0.25,
+          );
+
+          overtone.type = "sine";
+          overtone.frequency.value = freq * 2.01;
+
+          filter.type = "lowpass";
+          filter.frequency.value = 2300;
+
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.linearRampToValueAtTime(volume, now + 0.008);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+
+          overtoneGain.gain.setValueAtTime(0.001, now);
+          overtoneGain.gain.linearRampToValueAtTime(volume * 0.14, now + 0.006);
+
+          overtoneGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+
+          oscillator.connect(filter);
+          filter.connect(gain);
+          gain.connect(audio.destination);
+
+          overtone.connect(overtoneGain);
+          overtoneGain.connect(audio.destination);
+
+          oscillator.start(now);
+          oscillator.stop(now + 0.34);
+
+          overtone.start(now);
+          overtone.stop(now + 0.15);
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      // Create falling ball
+      function spawnBall() {
+        const p = colors[Math.floor(Math.random() * colors.length)];
+
+        balls.push({
+          x: box.x + box.w / 2 + (Math.random() - 0.5) * box.w * 0.12,
+
+          y: box.y - 18,
+
+          vx: (Math.random() - 0.5) * 1.2,
+          vy: 0,
+
+          r: 12,
+          color: p,
+          rest: 0,
+        });
+      }
+
+      // Update counter and progress
+      function updateStats() {
+        const area = balls.reduce(
+          (sum, ball) => sum + Math.PI * ball.r * ball.r,
+          0,
+        );
+
+        const percentage = Math.min(100, (area / (box.w * box.h)) * 100);
+
+        document.getElementById("count").textContent = balls.length + " BALLS";
+
+        document.getElementById("progress").style.width = percentage + "%";
+
+        document.getElementById("merged").textContent = merged + " merged";
+
+        return percentage;
+      }
+
+      // Reset simulation
+      function resetSimulation() {
+        balls = [];
+        running = false;
+        full = false;
+        accumulator = 0;
+        merged = 0;
+
+        updateStats();
+
+        document.getElementById("start").textContent = "▶ Start filling";
+
+        document.getElementById("status").textContent = "Ready";
+      }
+
+      // Merge same-colour balls
+      function mergeBalls(a, b) {
+        const areaA = a.r * a.r;
+        const areaB = b.r * b.r;
+        const total = areaA + areaB;
+
+        const newBall = {
+          x: (a.x * areaA + b.x * areaB) / total,
+
+          y: (a.y * areaA + b.y * areaB) / total,
+
+          vx: (a.vx * areaA + b.vx * areaB) / total,
+
+          vy: (a.vy * areaA + b.vy * areaB) / total,
+
+          r: Math.sqrt(total),
+
+          color: a.color,
+          rest: 0,
+        };
+
+        balls.splice(balls.indexOf(a), 1);
+        balls.splice(balls.indexOf(b), 1);
+
+        balls.push(newBall);
+
+        merged++;
+
+        // Different sound for merging
+        playNote(a.color.freq * 1.5, 0.055);
+      }
+
+      // Ball collision
+      function collide(a, b) {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+
+        const distance = Math.hypot(dx, dy);
+        const minimum = a.r + b.r;
+
+        if (distance === 0 || distance >= minimum) {
+          return false;
+        }
+
+        // Same colour: merge
+        if (a.color === b.color) {
+          mergeBalls(a, b);
+          return true;
+        }
+
+        // Different colour: bounce
+        const nx = dx / distance;
+        const ny = dy / distance;
+
+        const overlap = minimum - distance;
+
+        a.x -= (nx * overlap) / 2;
+        a.y -= (ny * overlap) / 2;
+
+        b.x += (nx * overlap) / 2;
+        b.y += (ny * overlap) / 2;
+
+        const relativeVelocity = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+
+        if (relativeVelocity < 0) {
+          const impact = Math.abs(relativeVelocity);
+
+          a.vx += relativeVelocity * nx * 0.88;
+          a.vy += relativeVelocity * ny * 0.88;
+
+          b.vx -= relativeVelocity * nx * 0.88;
+          b.vy -= relativeVelocity * ny * 0.88;
+
+          // Only noticeable collisions make sound
+          if (impact > 2.5) {
+            playNote(
+              (a.color.freq + b.color.freq) / 2,
+              Math.min(0.04, impact * 0.004),
+            );
+          }
+        }
+
+        return false;
+      }
+
+      // Physics
+      function updatePhysics(dt) {
+        for (const ball of balls) {
+          // Gravity
+          ball.vy = Math.min(ball.vy + 0.19 * dt, 8);
+
+          ball.x += ball.vx * dt;
+          ball.y += ball.vy * dt;
+
+          // Left wall
+          if (ball.x - ball.r < box.x) {
+            ball.x = box.x + ball.r;
+            ball.vx = Math.abs(ball.vx) * 0.65;
+
+            if (Math.abs(ball.vx) > 2.5) {
+              playNote(330, 0.018);
+            }
+          }
+
+          // Right wall
+          if (ball.x + ball.r > box.x + box.w) {
+            ball.x = box.x + box.w - ball.r;
+            ball.vx = -Math.abs(ball.vx) * 0.65;
+
+            if (Math.abs(ball.vx) > 2.5) {
+              playNote(370, 0.018);
+            }
+          }
+
+          // Bottom
+          if (ball.y + ball.r > box.y + box.h) {
+            ball.y = box.y + box.h - ball.r;
+
+            const impact = Math.abs(ball.vy);
+
+            ball.vy = impact > 1.2 ? -impact * 0.24 : 0;
+
+            if (impact > 2.5) {
+              playNote(ball.color.freq, 0.025);
+            }
+          }
+
+          // Top
+          if (ball.y - ball.r < box.y) {
+            ball.y = box.y + ball.r;
+            ball.vy = Math.abs(ball.vy) * 0.4;
+          }
+
+          // Friction
+          ball.vx *= 0.996;
+
+          if (Math.abs(ball.vx) < 0.025) {
+            ball.vx = 0;
+          }
+
+          if (
+            Math.abs(ball.vy) < 0.12 &&
+            ball.y + ball.r >= box.y + box.h - 0.5
+          ) {
+            ball.vy = 0;
+          }
+        }
+
+        // Check ball-to-ball collisions
+        for (let i = 0; i < balls.length; i++) {
+          let didMerge = false;
+
+          for (let j = i + 1; j < balls.length; j++) {
+            if (collide(balls[i], balls[j])) {
+              didMerge = true;
+              break;
+            }
+          }
+
+          // Restart collision scanning after merging
+          if (didMerge) {
+            i = -1;
+          }
+        }
+      }
+
+      // Draw simulation
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+
+        ctx.fillStyle = "#0c1428";
+        ctx.fillRect(0, 0, W, H);
+
+        // Container
+        ctx.save();
+
+        ctx.shadowColor = "#7d8dff";
+        ctx.shadowBlur = 15;
+
+        ctx.strokeStyle = full ? "#70edbd" : "#a5b4fc";
+        ctx.lineWidth = 3;
+
+        ctx.beginPath();
+
+        ctx.moveTo(box.x, box.y);
+
+        ctx.lineTo(box.x, box.y + box.h);
+
+        ctx.lineTo(box.x + box.w, box.y + box.h);
+
+        ctx.lineTo(box.x + box.w, box.y);
+
+        ctx.stroke();
+
+        ctx.restore();
+
+        // Clip balls inside container
+        ctx.save();
+
+        ctx.beginPath();
+
+        ctx.rect(box.x + 2, box.y + 2, box.w - 4, box.h - 3);
+
+        ctx.clip();
+
+        // Draw balls
+        for (const ball of balls) {
+          ctx.save();
+
+          ctx.shadowColor = ball.color.color;
+          ctx.shadowBlur = 12;
+
+          const gradient = ctx.createRadialGradient(
+            ball.x - ball.r * 0.35,
+            ball.y - ball.r * 0.4,
+            1,
+            ball.x,
+            ball.y,
+            ball.r,
+          );
+
+          gradient.addColorStop(0, "#ffffff");
+          gradient.addColorStop(0.22, ball.color.color);
+          gradient.addColorStop(1, ball.color.color);
+
+          ctx.fillStyle = gradient;
+
+          ctx.beginPath();
+
+          ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+
+          ctx.fill();
+
+          ctx.restore();
+        }
+
+        ctx.restore();
+      }
+
+      // Main animation loop
+      function animate(time) {
+        requestAnimationFrame(animate);
+
+        const dt = Math.min((time - lastTime) / 16.67 || 1, 2);
+
+        lastTime = time;
+
+        // Continuous ball dropping
+        if (running) {
+          accumulator += (dt * speed) / 60;
+
+          if (accumulator >= 1) {
+            spawnBall();
+            accumulator -= 1;
+          }
+        }
+
+        updatePhysics(dt);
+
+        const percentage = updateStats();
+
+        // Stop only at the chosen filling threshold
+        if (running && percentage >= 68) {
+          running = false;
+          full = true;
+
+          document.getElementById("start").textContent = "✓ Box filled";
+
+          document.getElementById("status").textContent = "Container full!";
+        }
+
+        draw();
+      }
+
+      // Controls
+      document.getElementById("start").onclick = () => {
+        if (full) return;
+
+        running = !running;
+
+        document.getElementById("start").textContent = running
+          ? "Ⅱ Pause filling"
+          : "▶ Continue filling";
+
+        document.getElementById("status").textContent = running
+          ? "Dropping balls..."
+          : "Paused";
+      };
+
+      document.getElementById("reset").onclick = resetSimulation;
+
+      document.getElementById("sound").onclick = () => {
+        soundEnabled = !soundEnabled;
+
+        document.getElementById("sound").textContent =
+          "♫ Sound: " + (soundEnabled ? "On" : "Off");
+
+        if (soundEnabled) {
+          initAudio();
+        }
+      };
+
+      document.getElementById("speed").oninput = (e) => {
+        speed = Number(e.target.value);
+
+        document.getElementById("speedValue").textContent = speed;
+      };
+
+      // Initialize
+      resize();
+      requestAnimationFrame(animate);
+    </script>
+  </body>
+</html>
